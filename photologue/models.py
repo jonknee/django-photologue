@@ -7,6 +7,7 @@ from datetime import datetime
 from inspect import isclass
 
 from django.db import models
+from django.db.models import F
 from django.db.models.signals import post_init
 from django.conf import settings
 from django.core.files.base import ContentFile
@@ -130,6 +131,21 @@ for n in dir(ImageFilter):
             filter_names.append(klass.__name__)
 IMAGE_FILTERS_HELP_TEXT = _('Chain multiple filters using the following pattern "FILTER_ONE->FILTER_TWO->FILTER_THREE". Image filters will be applied in order. The following filters are available: %s.' % (', '.join(filter_names)))
 
+class GalleryMembership(models.Model):
+    """
+    Adding custom posution for photos in galleries.
+    Inspired by https://github.com/jdriscoll/django-photologue/issues/6
+    """
+    #Define the position of a photo in a gallery to allow custom ordering.
+    gallery = models.ForeignKey('Gallery')
+    photo = models.ForeignKey('Photo')
+    position = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ['position']
+
+    def __unicode__(self):
+        return "%s %s" % (self.photo, self.position)
 
 class Gallery(models.Model):
     date_added = models.DateTimeField(_('date published'), default=datetime.now)
@@ -140,7 +156,7 @@ class Gallery(models.Model):
     is_public = models.BooleanField(_('is public'), default=True,
                                     help_text=_('Public galleries will be displayed in the default views.'))
     photos = models.ManyToManyField('Photo', related_name='galleries', verbose_name=_('photos'),
-                                    null=True, blank=True)
+                                    null=True, blank=True, through='GalleryMembership')
     tags = TagField(help_text=tagfield_help_text, verbose_name=_('tags'))
 
     class Meta:
@@ -191,7 +207,7 @@ class Gallery(models.Model):
 
     def public(self):
         """Return a queryset of all the public photos in this gallery."""
-        return self.photos.filter(is_public=True)
+        return self.photos.filter(is_public=True).order_by()
 
 
 class GalleryUpload(models.Model):
@@ -513,7 +529,7 @@ class Photo(ImageModel):
     tags = TagField(help_text=tagfield_help_text, verbose_name=_('tags'))
 
     class Meta:
-        ordering = ['-date_added']
+        ordering = ['gallerymembership__position', '-date_added']
         get_latest_by = 'date_added'
         verbose_name = _("photo")
         verbose_name_plural = _("photos")
@@ -538,18 +554,40 @@ class Photo(ImageModel):
 
     def get_previous_in_gallery(self, gallery):
         try:
-            return self.get_previous_by_date_added(galleries__exact=gallery,
-                                                   is_public=True)
-        except Photo.DoesNotExist:
+            membership = GalleryMembership.objects.get(
+                gallery=gallery,
+                photo=self
+            )
+        except GalleryMembership.DoesNotExist:
+            return None
+        try:
+            prev = GalleryMembership.objects.filter(
+                    gallery=gallery, 
+                    position__lte=membership.position
+                ).exclude(
+                    photo=self
+                ).order_by('-position', 'photo__date_added')
+
+            return prev[0].photo
+        except IndexError:
             return None
 
     def get_next_in_gallery(self, gallery):
         try:
-            return self.get_next_by_date_added(galleries__exact=gallery,
-                                               is_public=True)
-        except Photo.DoesNotExist:
+            membership = GalleryMembership.objects.get(
+                gallery=gallery,
+                photo=self
+            )
+        except GalleryMembership.DoesNotExist:
             return None
+        try:
+            next = GalleryMembership.objects.filter(
+                gallery=gallery, 
+                position__gte=membership.position).exclude(photo=self)
 
+            return next[0].photo
+        except IndexError:
+            return None
 
 class BaseEffect(models.Model):
     name = models.CharField(_('name'), max_length=30, unique=True)
