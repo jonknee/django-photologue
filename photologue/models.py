@@ -8,7 +8,8 @@ from inspect import isclass
 
 from django.db import models
 from django.db.models import F
-from django.db.models.signals import post_init
+from django.db.models.signals import post_init, post_save
+from django.dispatch import receiver
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.urlresolvers import reverse
@@ -487,20 +488,20 @@ class ImageModel(models.Model):
         except:
             pass
 
+    def update_exif(self):
+        try:
+            exif_date = self.EXIF.get('EXIF DateTimeOriginal', None)
+            if exif_date is not None:
+                d, t = str.split(exif_date.values)
+                year, month, day = d.split(':')
+                hour, minute, second = t.split(':')
+                self.date_taken = datetime(int(year), int(month), int(day),
+                                           int(hour), int(minute), int(second))
+                self.save()
+        except:
+            pass
+
     def save(self, *args, **kwargs):
-        if self.date_taken is None:
-            try:
-                exif_date = self.EXIF.get('EXIF DateTimeOriginal', None)
-                if exif_date is not None:
-                    d, t = str.split(exif_date.values)
-                    year, month, day = d.split(':')
-                    hour, minute, second = t.split(':')
-                    self.date_taken = datetime(int(year), int(month), int(day),
-                                               int(hour), int(minute), int(second))
-            except:
-                pass
-        if self.date_taken is None:
-            self.date_taken = datetime.now()
         if self._get_pk_val():
             self.clear_cache()
         super(ImageModel, self).save(*args, **kwargs)
@@ -588,6 +589,17 @@ class Photo(ImageModel):
             return next[0].photo
         except IndexError:
             return None
+
+@receiver(post_save, sender=Photo)
+def exif_updater(sender, instance, created, **kwargs):
+    """
+    Since the image file isn't always accessible during the save() method,
+    we want to run the EXIF method after the image has been saved. This
+    makes the Photo.date_taken feature actually work.
+    """
+
+    if created:
+        instance.update_exif()
 
 class BaseEffect(models.Model):
     name = models.CharField(_('name'), max_length=30, unique=True)
